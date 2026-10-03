@@ -11,6 +11,8 @@ BACKEND_DIR  := backend
 FRONTEND_DIR := frontend
 COMPOSE      := docker compose -f deploy/docker-compose.yml
 VERSION      ?= 1.0.0
+API_IMAGE    := flowboard/api:$(VERSION)
+WEB_IMAGE    := flowboard/web:$(VERSION)
 COMMIT       ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo local)
 # Overridden by CI and the Docker build, which pass a real timestamp.
 BUILD_TIME   ?= unknown
@@ -21,8 +23,8 @@ LDFLAGS      := -s -w \
 
 .DEFAULT_GOAL := help
 .PHONY: help install dev-api dev-web dev stop test test-backend test-frontend lint fmt \
-        build build-backend build-frontend verify docker-env docker-build docker-up \
-        docker-down docker-logs docker-reset ci clean
+        build build-backend build-frontend verify docker-env docker-build docker-lint \
+        docker-up docker-down docker-logs docker-reset ci clean
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -92,6 +94,15 @@ docker-env: ## Create deploy/.env with a fresh secret if it does not exist
 
 docker-build: docker-env ## Build the api and web images
 	$(COMPOSE) build
+
+# nginx resolves upstream names when the config loads, so a standalone container
+# needs a hosts entry for the compose service name "api" or `nginx -t` reports
+# "host not found in upstream". The e2e job covers resolution for real.
+# (This explanation lives outside the recipe on purpose: lines beginning with a
+# tab are handed to the shell, where `#` is only a comment to a POSIX shell.)
+docker-lint: ## Syntax-check the nginx edge config inside the web image
+	docker run --rm --entrypoint nginx --add-host api:127.0.0.1 \
+	  $(WEB_IMAGE) -t -c /etc/nginx/nginx.conf
 
 docker-up: docker-env ## Start the stack (nginx on :8080)
 	$(COMPOSE) up -d --wait

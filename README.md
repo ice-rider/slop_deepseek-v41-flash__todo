@@ -411,9 +411,28 @@ pnpm run verify:docker   # against the container image
    - the SSE stream delivers its first frame promptly (proving nginx is not
      buffering it),
    - the API publishes **no host ports** and **cannot reach the internet**,
-   - while nginx still proxies it over the internal network.
+   - while nginx still proxies it over the internal network,
+   - and both containers run non-root, read-only, with all capabilities dropped.
 6. **publish** — on `main` and version tags, both images are pushed to GHCR with
    provenance and SBOM attestations.
+
+The end-to-end assertions are not inline YAML: they live in
+[`tools/ci-smoke.sh`](tools/ci-smoke.sh) and
+[`tools/ci-isolation.sh`](tools/ci-isolation.sh), and the workflow calls those
+same files. A local run and a CI run therefore execute identical code, which
+matters because this is exactly where "works in CI, never tried locally" bugs
+hide — one did, and it is the reason the nginx lint step passes
+`--add-host api:127.0.0.1`.
+
+```bash
+make docker-up                                  # or: make docker-build docker-up
+BASE=http://localhost:8080 bash tools/ci-smoke.sh
+EDGE=http://localhost:8080 bash tools/ci-isolation.sh
+make docker-lint                                # nginx -t on the edge config
+```
+
+Both scripts need `bash`, `curl`, `jq` and `docker`; they exit non-zero with the
+failing assertion printed.
 
 ---
 
@@ -460,7 +479,10 @@ flowboard/
 │   ├── nginx/                edge configuration and proxy snippet
 │   └── .env.example
 ├── docs/screenshots/
-├── tools/ui-verify/          headless-browser verification harness
+├── tools/
+│   ├── ci-smoke.sh           end-to-end API/SPA checks (also run by CI)
+│   ├── ci-isolation.sh       network isolation + container hardening checks
+│   └── ui-verify/            headless-browser verification harness
 ├── .github/workflows/ci.yml
 ├── Makefile
 └── README.md

@@ -167,7 +167,12 @@ jobs:
           cache-to: type=gha,mode=max,scope=web
 
       - name: Lint the nginx configuration
-        run: docker run --rm --entrypoint nginx flowboard/web:${{ env.IMAGE_VERSION }} -t -c /etc/nginx/nginx.conf
+        # One definition of the command, shared with `make docker-lint`. nginx
+        # resolves upstream names when it loads the config, so a standalone
+        # container needs a hosts entry for the compose service "api" or it
+        # fails with "host not found in upstream". Real resolution is exercised
+        # by the smoke and isolation checks below, which run against the stack.
+        run: make docker-lint VERSION=${{ env.IMAGE_VERSION }}
 
       - name: Prove the API image boots and reports ready
         run: |
@@ -226,126 +231,18 @@ jobs:
           docker compose -f deploy/docker-compose.yml up -d --no-build --wait
           docker compose -f deploy/docker-compose.yml ps
 
-      - name: Serve the SPA with hardened headers
-        run: |
-          set -euo pipefail
-          base=http://localhost:8080
-          headers="$(curl -fsSI "$base/")"
-          echo "$headers"
-          echo "$headers" | grep -qi 'content-security-policy'
-          echo "$headers" | grep -qi 'x-content-type-options: nosniff'
-          echo "$headers" | grep -qi 'x-frame-options: DENY'
-          curl -fsS "$base/" | grep -q 'id="root"'
-          curl -fsS "$base/theme-init.js" | grep -q "flowboard.ui"
+      - name: Smoke test the running product through nginx
+        # The assertions live in tools/ci-smoke.sh so that this job and a local
+        # run execute the same file instead of two copies that can drift.
+        env:
+          BASE: http://localhost:8080
+        run: bash tools/ci-smoke.sh
 
-      - name: API smoke test through the proxy
-        run: |
-          set -euo pipefail
-          base=http://localhost:8080
-
-          curl -fsS "$base/healthz" | jq -e '.status == "ok"' >/dev/null
-          curl -fsS "$base/readyz" | jq -e '.status == "ready"' >/dev/null
-          echo "health and readiness checks pass through nginx"
-
-          session="$(curl -fsS -X POST "$base/api/v1/auth/register" \
-            -H 'content-type: application/json' \
-            -d '{"email":"ci-e2e@example.com","name":"CI Runner","password":"supersecret"}')"
-          token="$(printf '%s' "$session" | jq -r '.accessToken')"
-          [ "$token" != "null" ] || { echo "::error::registration returned no token"; exit 1; }
-
-          created="$(curl -fsS -X POST "$base/api/v1/boards" \
-            -H "authorization: Bearer $token" -H 'content-type: application/json' \
-            -d '{"title":"CI board","template":"kanban"}')"
-          board="$(printf '%s' "$created" | jq -r '.board.id')"
-          columns="$(printf '%s' "$created" | jq -r '.snapshot.columns | length')"
-          todo="$(printf '%s' "$created" | jq -r '.snapshot.columns[1].id')"
-          done_col="$(printf '%s' "$created" | jq -r '.snapshot.columns[4].id')"
-          [ "$columns" = "5" ] || { echo "::error::expected 5 template columns, got $columns"; exit 1; }
-          echo "board created with the kanban template"
-
-          card="$(curl -fsS -X POST "$base/api/v1/columns/$todo/cards" \
-            -H "authorization: Bearer $token" -H 'content-type: application/json' \
-            -d '{"title":"Shipped through nginx","priority":3}' | jq -r '.card.id')"
-
-          curl -fsS -X POST "$base/api/v1/cards/$card/move" \
-            -H "authorization: Bearer $token" -H 'content-type: application/json' \
-            -d "{\"columnId\":\"$done_col\",\"position\":0}" >/dev/null
-
-          snapshot="$(curl -fsS "$base/api/v1/boards/$board" -H "authorization: Bearer $token")"
-          landed="$(printf '%s' "$snapshot" | jq -r '.cards[0].columnId')"
-          completed="$(printf '%s' "$snapshot" | jq -r '.cards[0].completedAt')"
-          [ "$landed" = "$done_col" ] || { echo "::error::card stayed in $landed"; exit 1; }
-          [ "$completed" != "null" ] || { echo "::error::completedAt was not stamped"; exit 1; }
-          echo "card moved into the done column and was stamped complete"
-
-          found="$(curl -fsS "$base/api/v1/search?q=nginx" -H "authorization: Bearer $token" | jq -r '.count')"
-          [ "$found" = "1" ] || { echo "::error::search returned $found results"; exit 1; }
-          echo "search finds the new card"
-
-          echo "TOKEN=$token" >> "$GITHUB_ENV"
-          echo "BOARD=$board" >> "$GITHUB_ENV"
-
-      - name: Realtime stream is not buffered by nginx
-        run: |
-          set -euo pipefail
-          # A buffered proxy would deliver nothing until the buffer filled, so
-          # reading the first frame within a few seconds proves streaming works.
-          timeout 15 curl -sN "http://localhost:8080/api/v1/events?boardId=$BOARD&access_token=$TOKEN" \
-            | head -c 400 > /tmp/first-frame.txt || true
-          cat /tmp/first-frame.txt
-          grep -q 'event: hello' /tmp/first-frame.txt
-
-      - name: The API is unreachable from the host and from the internet
-        run: |
-          set -euo pipefail
-          compose="docker compose -f deploy/docker-compose.yml"
-
-          # `docker compose port` prints an error instead of nothing when a port
-          # is unpublished, so inspect the binding table directly.
-          api_id="$($compose ps -q api)"
-          bindings="$(docker inspect "$api_id" --format '{{json .HostConfig.PortBindings}}')"
-          if [ "$bindings" != "{}" ]; then
-            echo "::error::the API publishes host ports: $bindings"
-            exit 1
-          fi
-          echo "API publishes no host ports ($bindings)"
-
-          # Only nginx should be reachable from the host.
-          web_id="$($compose ps -q web)"
-          web_bindings="$(docker inspect "$web_id" --format '{{json .HostConfig.PortBindings}}')"
-          if [ "$web_bindings" = "{}" ]; then
-            echo "::error::nginx published nothing, so the app is unreachable"
-            exit 1
-          fi
-          echo "nginx publishes the edge port ($web_bindings)"
-
-          # No outbound internet from the internal network.
-          if $compose exec -T api wget -T 3 -q -O- http://example.com >/dev/null 2>&1; then
-            echo "::error::the API reached the internet; the internal network is not isolating it"
-            exit 1
-          fi
-          echo "API has no outbound internet access"
-
-          # nginx can still reach it over the shared internal network.
-          curl -fsS "http://localhost:8080/readyz" >/dev/null
-          echo "nginx proxies the API over the internal network"
-
-      - name: Containers run hardened
-        run: |
-          set -euo pipefail
-          compose="docker compose -f deploy/docker-compose.yml"
-          for service in api web; do
-            id="$($compose ps -q "$service")"
-            readonly_rootfs="$(docker inspect "$id" --format '{{.HostConfig.ReadonlyRootfs}}')"
-            caps="$(docker inspect "$id" --format '{{json .HostConfig.CapDrop}}')"
-            user="$(docker inspect "$id" --format '{{.Config.User}}')"
-            security="$(docker inspect "$id" --format '{{json .HostConfig.SecurityOpt}}')"
-            echo "$service: readOnly=$readonly_rootfs capDrop=$caps user=$user security=$security"
-            [ "$readonly_rootfs" = "true" ] || { echo "::error::$service root filesystem is writable"; exit 1; }
-            case "$caps" in *ALL*) ;; *) echo "::error::$service has not dropped all capabilities"; exit 1;; esac
-            case "$security" in *no-new-privileges*) ;; *) echo "::error::$service allows privilege escalation"; exit 1;; esac
-            [ -n "$user" ] || { echo "::error::$service runs as root"; exit 1; }
-          done
+      - name: Assert network isolation and container hardening
+        # Same shared script as a local run; see tools/ci-isolation.sh.
+        env:
+          EDGE: http://localhost:8080
+        run: bash tools/ci-isolation.sh
 
       - name: Container logs
         if: failure()
