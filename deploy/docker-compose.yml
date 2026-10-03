@@ -1,0 +1,128 @@
+# FlowBoard — production-shaped stack.
+#
+#   deploy/
+#     docker-compose.yml   ← you are here
+#     .env                 ← copy .env.example and set a JWT secret
+#
+#   docker compose -f deploy/docker-compose.yml up --build -d
+#
+# Network topology
+# ----------------
+#   Internet ──▶ web (nginx, published port)
+#                  │
+#                  └── backend (internal: true) ──▶ api (no published ports)
+#
+# The API sits on a network with `internal: true`, so it has no route to the
+# internet and cannot be reached from the host. Only nginx is dual-homed.
+
+name: flowboard
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
+      args:
+        VERSION: ${FLOWBOARD_VERSION:-1.0.0}
+        COMMIT: ${FLOWBOARD_COMMIT:-local}
+        BUILD_TIME: ${FLOWBOARD_BUILD_TIME:-unknown}
+    image: flowboard/api:${FLOWBOARD_VERSION:-1.0.0}
+    restart: unless-stopped
+    init: true
+    environment:
+      FLOWBOARD_ENV: production
+      FLOWBOARD_ADDR: ":8080"
+      FLOWBOARD_DB_PATH: /data/flowboard.db
+      FLOWBOARD_JWT_SECRET: ${FLOWBOARD_JWT_SECRET:?set FLOWBOARD_JWT_SECRET in deploy/.env}
+      FLOWBOARD_ALLOWED_ORIGINS: ${FLOWBOARD_ALLOWED_ORIGINS:-http://localhost:8080}
+      FLOWBOARD_SEED_DEMO: ${FLOWBOARD_SEED_DEMO:-false}
+      FLOWBOARD_LOG_LEVEL: ${FLOWBOARD_LOG_LEVEL:-info}
+      FLOWBOARD_ACCESS_TTL: ${FLOWBOARD_ACCESS_TTL:-30m}
+      FLOWBOARD_REFRESH_TTL: ${FLOWBOARD_REFRESH_TTL:-720h}
+    volumes:
+      - flowboard-data:/data
+    networks:
+      - backend
+    # The image is immutable: no writes outside the data volume.
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:8080/readyz"]
+      interval: 15s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+        reservations:
+          memory: 128M
+    logging: *default-logging
+
+  web:
+    build:
+      context: ..
+      dockerfile: frontend/Dockerfile
+      args:
+        VITE_API_BASE: /api/v1
+    image: flowboard/web:${FLOWBOARD_VERSION:-1.0.0}
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      # Only the edge is published. Terminate TLS in front of this port (or add
+      # a TLS server block) for anything beyond a local demo.
+      - "${FLOWBOARD_HTTP_PORT:-8080}:8080"
+    networks:
+      # Dual-homed: the edge network faces the host, the backend network faces
+      # the API. Nothing else joins both.
+      - edge
+      - backend
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+      - /var/cache/nginx:size=32m,mode=0755
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:8080/healthz"]
+      interval: 15s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 256M
+    logging: *default-logging
+
+networks:
+  # Host-facing network.
+  edge:
+    driver: bridge
+  # Internal-only: no gateway to the outside world, so a compromise in the API
+  # cannot be used to exfiltrate data directly.
+  backend:
+    driver: bridge
+    internal: true
+
+volumes:
+  flowboard-data:
+    driver: local

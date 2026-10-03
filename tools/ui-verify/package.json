@@ -1,0 +1,14 @@
+{
+  "name": "flowboard-ui-verify",
+  "private": true,
+  "type": "module",
+  "description": "Browser-driven verification harness for the FlowBoard UI",
+  "scripts": {
+    "verify": "node verify.mjs",
+    "verify:docker": "node verify-docker.mjs",
+    "smoke": "node smoke.mjs"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.63.0"
+  }
+}

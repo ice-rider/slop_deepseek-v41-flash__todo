@@ -1,0 +1,31 @@
+# Build context hygiene. Applies to both images (context = repository root).
+
+# Version control and CI
+.git
+.gitignore
+.github
+.verify
+.localdata
+
+# Dependencies and build output
+**/node_modules
+**/dist
+**/bin
+**/.vite
+**/*.exe
+**/*.test
+
+# Local databases and logs
+**/*.db
+**/*.db-shm
+**/*.db-wal
+**/*.log
+data
+
+# Docs and editor noise
+**/*.md
+LICENSE
+**/.DS_Store
+**/.idea
+**/.vscode
+deploy/.env

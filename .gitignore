@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+bin/
+*.exe
+
+# Local runtime data
+.localdata/
+*.db
+*.db-shm
+*.db-wal
+data/
+
+# Secrets and local configuration
+deploy/.env
+.env
+.env.local
+
+# Editor and OS noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# Logs and coverage
+*.log
+coverage.out
+coverage.html
+
+# Tooling scratch space
+.verify/
