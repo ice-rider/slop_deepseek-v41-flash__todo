@@ -236,13 +236,35 @@ jobs:
         # run execute the same file instead of two copies that can drift.
         env:
           BASE: http://localhost:8080
-        run: bash tools/ci-smoke.sh
+        run: |
+          set -euo pipefail
+          script=tools/ci-smoke.sh
+          if [ ! -f "$script" ]; then
+            echo "::error::$script is missing from the checkout — is it committed?"
+            echo "workspace: ${GITHUB_WORKSPACE:-<unset>}"
+            echo "cwd: $(pwd)"
+            ls -la
+            echo "--- tools/ ---"
+            ls -la tools 2>/dev/null || echo "(no tools directory)"
+            exit 1
+          fi
+          bash "$script"
 
       - name: Assert network isolation and container hardening
         # Same shared script as a local run; see tools/ci-isolation.sh.
         env:
           EDGE: http://localhost:8080
-        run: bash tools/ci-isolation.sh
+        run: |
+          set -euo pipefail
+          script=tools/ci-isolation.sh
+          if [ ! -f "$script" ]; then
+            echo "::error::$script is missing from the checkout — is it committed?"
+            echo "workspace: ${GITHUB_WORKSPACE:-<unset>}"
+            echo "cwd: $(pwd)"
+            ls -la tools 2>/dev/null || echo "(no tools directory)"
+            exit 1
+          fi
+          bash "$script"
 
       - name: Container logs
         if: failure()

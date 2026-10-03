@@ -1,0 +1,30 @@
+# Line-ending policy.
+#
+# This project is developed on Windows and run on Linux (containers, CI), so
+# endings must be pinned rather than left to each contributor's core.autocrlf.
+# A CRLF-committed shell script fails on the runner with confusing errors
+# ("$'\r': command not found"), and a CRLF-committed nginx.conf or Dockerfile
+# behaves differently inside the image than on the machine that wrote it.
+* text=auto eol=lf
+# Shell scripts are executed directly by CI.
+*.sh   text eol=lf
+# Configuration and sources that must match byte-for-byte across platforms.
+*.conf text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+*.ts   text eol=lf
+*.tsx  text eol=lf
+*.css  text eol=lf
+*.go   text eol=lf
+*.sql  text eol=lf
+*.mjs  text eol=lf
+# The Makefile needs real tabs for recipes; git never rewrites them, but pin the
+# endings so the file stays identical on both sides.
+Makefile text eol=lf
+# Binary assets must never be converted.
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff binary
+*.woff2 binary
